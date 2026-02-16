@@ -19,4 +19,4 @@ jobs:
       - name: Build & Push ml_logs
         run: |
           docker build -t ghcr.io/ursu44/ml_logs:latest .
-          docker push ghcr.io/ursu44/log-ml_logs:latest
+          docker push ghcr.io/ursu44/ml_logs:latest
