@@ -10,7 +10,8 @@ consumer = KafkaConsumer(
 print("Connected to Kafka")
 
 for msg in consumer:
-    print(msg.value)
+    print("Connected to Kafka")
+    #print(msg.value)
     # raw_msg = msg.value.decode(errors="ignore")
     # try:
     #     payload = json.loads(raw_msg)
