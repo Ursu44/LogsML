@@ -7,6 +7,8 @@ consumer = KafkaConsumer(
     group_id=None,
 )
 
+print("Connected to Kafka")
+
 for msg in consumer:
     print(msg.value)
     # raw_msg = msg.value.decode(errors="ignore")
