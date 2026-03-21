@@ -4,6 +4,10 @@ import numpy as np
 from collections import defaultdict, deque, Counter
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
+import os
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+os.environ["ABSL_FLAGS_ENABLE_NOABORT"] = "1"
+
 from antrenareIF import train_if_model
 from aplicareReguliEngine import apply_rule_engine
 from clasificareLoguri import classify_log_category
@@ -19,6 +23,12 @@ from vectorContaminatVerifcare import is_contaminated_entity_vector
 from antrenareRF import train_rf_model
 from socreRF import score_rf_model
 from labelizare import derive_label
+
+# =====================================================
+# LOC 1 — Importuri Etapa 5: LSTM
+# =====================================================
+from antrenareLSTM import train_lstm_model, SEQ_LEN
+from scoreLSTM import score_lstm_model
 
 # =====================================================
 # CONFIG
@@ -89,16 +99,33 @@ category_models: dict = {
 }
 
 # =====================================================
-# LOC 2 — STATE Etapa 4: Random Forest
+# STATE — RF
 # =====================================================
 
 rf_model         = None
 rf_scaler        = None
 rf_trained       = False
-rf_buffer_X      = []                        # vectori combinați stat + behav (22 dims)
-rf_buffer_y      = []                        # labeluri derivate (0 / 1)
+rf_buffer_X      = []
+rf_buffer_y      = []
 rf_score_history = deque(maxlen=SCORE_HISTORY)
-RF_BUFFER_SIZE   = 500                       # minim exemple labelate pentru antrenare
+RF_BUFFER_SIZE   = 500
+
+# =====================================================
+# LOC 2 — STATE Etapa 5: LSTM
+# =====================================================
+
+lstm_model         = None
+lstm_scaler        = None
+lstm_trained       = False
+lstm_score_history = deque(maxlen=SCORE_HISTORY)
+LSTM_BUFFER_SIZE   = 300   # minim secvențe complete pentru antrenare
+
+# Coada glisantă per entitate — ultimele SEQ_LEN vectori combinați
+entity_sequences: dict = defaultdict(lambda: deque(maxlen=SEQ_LEN))
+
+# Buffer de antrenare LSTM
+lstm_buffer_X = []   # list of arrays shape (SEQ_LEN, 22)
+lstm_buffer_y = []   # list of 0/1
 
 # =====================================================
 # MAIN LOOP
@@ -153,6 +180,14 @@ for msg in consumer:
     log_category  = classify_log_category(payload)
     skip_training = is_obviously_malicious(sem_feats) or \
                     is_contaminated_entity_vector(sem_feats)
+
+    # =====================================================
+    # LOC 3 — Actualizare secvență per entitate
+    # ÎNAINTE de orice model — secvența trebuie să fie
+    # disponibilă și în shortcut path
+    # =====================================================
+    combined_vector = np.concatenate([stat_vector, behavior_vector])
+    entity_sequences[entity_id].append(combined_vector)
 
     # =====================================================
     # ETAPA 3A — IF Statistic Global
@@ -256,18 +291,23 @@ for msg in consumer:
         level      = "HIGH"
         stat_score = behavior_score = None
 
-        # ------------------------------------------------
-        # LOC 3A — RF: label 1 sigur pe shortcut
-        # Shortcut = certitudine absolută din Rule Engine
-        # → cel mai curat label 1 posibil pentru RF
-        # ------------------------------------------------
-        combined_vector = np.concatenate([stat_vector, behavior_vector])
+        # RF — label 1 sigur pe shortcut
         rf_buffer_X.append(combined_vector)
         rf_buffer_y.append(1)
-
         if not rf_trained and len(rf_buffer_y) >= RF_BUFFER_SIZE:
             rf_model, rf_scaler = train_rf_model(rf_buffer_X, rf_buffer_y)
             rf_trained = True
+
+        # LOC 4A — LSTM: label 1 sigur pe shortcut
+        current_seq = list(entity_sequences[entity_id])
+        if len(current_seq) >= SEQ_LEN // 2:
+            lstm_buffer_X.append(current_seq)
+            lstm_buffer_y.append(1)
+            if not lstm_trained and len(lstm_buffer_y) >= LSTM_BUFFER_SIZE:
+                lstm_model, lstm_scaler = train_lstm_model(
+                    lstm_buffer_X, lstm_buffer_y
+                )
+                lstm_trained = True
 
         print(f"""
 {'='*50}
@@ -310,7 +350,7 @@ Risk Level:  {level}
         )
 
     # =====================================================
-    # ENSEMBLE IF (fără RF încă)
+    # ENSEMBLE IF
     # =====================================================
 
     if cat_score is not None:
@@ -330,48 +370,78 @@ Risk Level:  {level}
         )
 
     # =====================================================
-    # LOC 3B — ETAPA 4: Random Forest
+    # ETAPA 4 — Random Forest
     # =====================================================
 
-    combined_vector = np.concatenate([stat_vector, behavior_vector])
-
-    # Derivare label din Rule Engine + IF
     label = derive_label(rule_result, if_combined)
 
-    # Adaugă în buffer RF doar dacă labelul e cert (nu None)
     if label is not None and not skip_training:
         rf_buffer_X.append(combined_vector)
         rf_buffer_y.append(label)
 
-    # Antrenare RF când avem suficiente exemple labelate
     if not rf_trained and len(rf_buffer_y) >= RF_BUFFER_SIZE:
         rf_model, rf_scaler = train_rf_model(rf_buffer_X, rf_buffer_y)
         rf_trained = True
 
-    # Scorare RF dacă modelul e antrenat
     score_rf = None
     if rf_trained:
         score_rf = score_rf_model(rf_model, rf_scaler, combined_vector,
                                   rf_score_history)
 
     # =====================================================
-    # ENSEMBLE FINAL (IF + RF + Rule Engine)
+    # LOC 4B — ETAPA 5: LSTM
     # =====================================================
-    #
-    # Când RF e antrenat:
-    #   if_combined rămâne calculat ca înainte
-    #   rf contribuie cu 0.20 — redistribuim ponderile
-    #
-    #   Cu RF + cat model:
-    #     0.20*stat + 0.15*behav + 0.08*cat + 0.20*rf + 0.12*rarity + 0.08*burst
-    #
-    #   Cu RF fără cat model:
-    #     0.22*stat + 0.18*behav + 0.20*rf + 0.15*rarity + 0.10*burst
-    #
-    #   Fără RF (bootstrap):
-    #     ponderile IF originale — neschimbat
 
-    if score_rf is not None:
+    # Adaugă secvența în buffer LSTM cu același label ca RF
+    if label is not None and not skip_training:
+        current_seq = list(entity_sequences[entity_id])
+        if len(current_seq) >= SEQ_LEN // 2:
+            lstm_buffer_X.append(current_seq)
+            lstm_buffer_y.append(label)
+
+    # Antrenare LSTM când avem suficiente secvențe
+    if not lstm_trained and len(lstm_buffer_y) >= LSTM_BUFFER_SIZE:
+        lstm_model, lstm_scaler = train_lstm_model(
+            lstm_buffer_X, lstm_buffer_y
+        )
+        lstm_trained = True
+
+    # Scorare LSTM dacă modelul e antrenat
+    score_lstm = None
+    if lstm_trained:
+        score_lstm = score_lstm_model(
+            lstm_model, lstm_scaler,
+            list(entity_sequences[entity_id]),
+            lstm_score_history
+        )
+
+    # =====================================================
+    # ENSEMBLE FINAL (IF + RF + LSTM + Rule Engine)
+    # =====================================================
+
+    if score_rf is not None and score_lstm is not None:
+        # Ensemble complet
+        if cat_score is not None:
+            if_combined = (
+                0.18 * stat_score +
+                0.13 * behavior_score +
+                0.07 * cat_score +
+                0.18 * score_rf +
+                0.15 * score_lstm +
+                0.10 * template_rarity +
+                0.07 * burst_score
+            )
+        else:
+            if_combined = (
+                0.20 * stat_score +
+                0.15 * behavior_score +
+                0.18 * score_rf +
+                0.15 * score_lstm +
+                0.12 * template_rarity +
+                0.08 * burst_score
+            )
+    elif score_rf is not None:
+        # RF disponibil, LSTM în bootstrap
         if cat_score is not None:
             if_combined = (
                 0.20 * stat_score +
@@ -389,11 +459,12 @@ Risk Level:  {level}
                 0.15 * template_rarity +
                 0.10 * burst_score
             )
+    # else: if_combined rămâne din IF — faza bootstrap
 
     if rule_result.triggered:
-        # Dacă RF e foarte sigur, îi permitem să ridice scorul peste Rule Engine
-        rf_boost = score_rf if (score_rf is not None and score_rf > 0.85) else 0.0
-        final_risk = max(rule_result.score, if_combined, rf_boost)
+        rf_boost   = score_rf   if (score_rf   is not None and score_rf   > 0.85) else 0.0
+        lstm_boost = score_lstm if (score_lstm is not None and score_lstm > 0.85) else 0.0
+        final_risk = max(rule_result.score, if_combined, rf_boost, lstm_boost)
     else:
         final_risk = if_combined
 
@@ -410,9 +481,10 @@ Risk Level:  {level}
     # OUTPUT
     # =====================================================
 
-    icon = "🔴" if level == "HIGH" else ("🟡" if level == "MEDIUM" else "🟢")
-    cat_score_str = f"{round(cat_score, 3)}" if cat_score is not None else "N/A (training)"
-    rf_score_str  = f"{round(score_rf, 3)}"  if score_rf  is not None else "N/A (training)"
+    icon           = "🔴" if level == "HIGH" else ("🟡" if level == "MEDIUM" else "🟢")
+    cat_score_str  = f"{round(cat_score, 3)}"   if cat_score  is not None else "N/A (training)"
+    rf_score_str   = f"{round(score_rf, 3)}"    if score_rf   is not None else "N/A (training)"
+    lstm_score_str = f"{round(score_lstm, 3)}"  if score_lstm is not None else "N/A (training)"
 
     print(f"""
 {icon} EVENT ANALYSIS  [{level}]
@@ -437,6 +509,11 @@ RF Score:        {rf_score_str}
 RF Buffer:       {len(rf_buffer_y)}/{RF_BUFFER_SIZE} exemple labelate
 Labels (1/0):    {sum(rf_buffer_y)}/{len(rf_buffer_y) - sum(rf_buffer_y)}
 
+--- Etapa 5: LSTM ---
+LSTM Score:      {lstm_score_str}
+LSTM Buffer:     {len(lstm_buffer_y)}/{LSTM_BUFFER_SIZE} secvențe labelate
+Seq Length:      {len(entity_sequences[entity_id])}/{SEQ_LEN} evenimente
+
 --- Context Entitate (5 min) ---
 failed_auth:  {sem_feats['entity_failed_auth_5m']}
 sudo_count:   {sem_feats['entity_sudo_count_5m']}
@@ -445,6 +522,6 @@ lsass:        {sem_feats['entity_lsass_count_5m']}
 
 Final Risk:  {round(final_risk, 3)}
 Risk Level:  {level}
-{'[shortcut: N/A — reguli sub threshold]' if rule_result.triggered else '[rule engine: no match — IF + RF decide]'}
+{'[shortcut: N/A — reguli sub threshold]' if rule_result.triggered else '[rule engine: no match — IF + RF + LSTM decide]'}
 {'─'*50}
 """)
