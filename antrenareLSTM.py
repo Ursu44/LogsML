@@ -10,24 +10,11 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.utils.class_weight import compute_class_weight
 
 
-# Dimensiuni fixe
-SEQ_LEN    = 10   # câte evenimente anterioare vede LSTM
-INPUT_DIMS = 22   # stat_vector(12) + behavior_vector(10)
+SEQ_LEN    = 10
+INPUT_DIMS = 22
 
 
 def build_lstm_model() -> object:
-    """
-    Construiește arhitectura LSTM pentru detecție anomalii secvențiale.
-
-    Arhitectură:
-        Input:   (SEQ_LEN, INPUT_DIMS) = (10, 22)
-        LSTM:    64 unități — captează pattern-uri temporale
-        Dropout: 0.2 — regularizare, previne overfitting
-        LSTM:    32 unități — rafinare pattern-uri
-        Dropout: 0.2
-        Dense:   16 unități, activare relu
-        Dense:   1 unitate, activare sigmoid → probabilitate [0, 1]
-    """
     model = Sequential([
         LSTM(64, input_shape=(SEQ_LEN, INPUT_DIMS),
              return_sequences=True),
@@ -48,7 +35,6 @@ def build_lstm_model() -> object:
 
 
 def pad_sequence(seq, seq_len, input_dims):
-    """Padding cu zerouri la stânga pentru secvențe mai scurte decât seq_len."""
     seq_list = list(seq)
     if len(seq_list) < seq_len:
         pad_len = seq_len - len(seq_list)
@@ -61,32 +47,15 @@ def pad_sequence(seq, seq_len, input_dims):
 
 def train_lstm_model(sequences: list, labels: list,
                      scaler: StandardScaler = None) -> tuple:
-    """
-    Antrenează modelul LSTM pe secvențele acumulate.
 
-    Îmbunătățire față de versiunea anterioară:
-    - class_weight='balanced' — compensează dezechilibrul claselor
-      (ex: 17 malițioase vs 283 benigne → penalizare 16x mai mare
-      pentru greșelile pe clasa malițioasă)
-    - epochs=15 în loc de 10 — mai multe treceri pentru clase rare
-
-    Args:
-        sequences: listă de secvențe (fiecare e o listă de vectori)
-        labels:    listă de labeluri 0/1
-        scaler:    StandardScaler existent sau None (se creează unul nou)
-
-    Returnează:
-        (model, scaler) gata de utilizare
-    """
-    # Normalizare lungime — padding cu zerouri la stânga
     padded = []
     for seq in sequences:
         padded.append(pad_sequence(seq, SEQ_LEN, INPUT_DIMS))
 
-    X = np.array(padded, dtype=float)  # shape: (N, SEQ_LEN, INPUT_DIMS)
-    y = np.array(labels)               # shape: (N,)
+    X = np.array(padded, dtype=float)
+    y = np.array(labels)
 
-    # Normalizare — reshape pentru scaler (lucrează pe 2D)
+
     N, T, F = X.shape
     X_flat  = X.reshape(N * T, F)
 
@@ -98,11 +67,6 @@ def train_lstm_model(sequences: list, labels: list,
 
     X_scaled = X_flat.reshape(N, T, F)
 
-    # Calcul class weights — compensează dezechilibrul claselor
-    # Dacă avem 17 malițioase și 283 benigne:
-    #   weight_0 (benigni)   = 300 / (2 * 283) ≈ 0.53
-    #   weight_1 (malițios)  = 300 / (2 * 17)  ≈ 8.82
-    # → LSTM penalizează de ~16x mai mult greșelile pe malițios
     unique_classes = np.unique(y)
     if len(unique_classes) > 1:
         weights = compute_class_weight(
@@ -126,10 +90,10 @@ def train_lstm_model(sequences: list, labels: list,
 
     model.fit(
         X_scaled, y,
-        epochs=15,                      # mai multe epoci pentru clase rare
+        epochs=15,
         batch_size=32,
         validation_split=0.1,
-        class_weight=class_weight_dict, # compensare dezechilibru clase
+        class_weight=class_weight_dict,
         verbose=0
     )
 

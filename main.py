@@ -1,12 +1,16 @@
-from kafka import KafkaConsumer
-import json
-import numpy as np
-from collections import defaultdict, deque, Counter
-import warnings
-warnings.filterwarnings("ignore", category=UserWarning)
 import os
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["ABSL_FLAGS_ENABLE_NOABORT"] = "1"
+
+import warnings
+warnings.filterwarnings("ignore")
+
+from kafka import KafkaConsumer, KafkaProducer
+import json
+import uuid
+import numpy as np
+from collections import defaultdict, deque, Counter
+from datetime import datetime
 
 from antrenareIF import train_if_model
 from aplicareReguliEngine import apply_rule_engine
@@ -24,15 +28,8 @@ from antrenareRF import train_rf_model
 from socreRF import score_rf_model
 from labelizare import derive_label
 
-# =====================================================
-# LOC 1 — Importuri Etapa 5: LSTM
-# =====================================================
 from antrenareLSTM import train_lstm_model, SEQ_LEN
 from scoreLSTM import score_lstm_model
-
-# =====================================================
-# CONFIG
-# =====================================================
 
 WINDOW_1M = 60
 WINDOW_5M = 300
@@ -50,10 +47,6 @@ RETRAIN_WINDOW   = 600
 
 LOG_CATEGORIES = ["auth", "web", "network", "system", "alert"]
 
-# =====================================================
-# KAFKA
-# =====================================================
-
 consumer = KafkaConsumer(
     "logs_normalized",
     bootstrap_servers="localhost:29092",
@@ -61,9 +54,10 @@ consumer = KafkaConsumer(
     group_id=None,
 )
 
-# =====================================================
-# STATE — IF
-# =====================================================
+producer = KafkaProducer(
+    bootstrap_servers="localhost:29092",
+    value_serializer=lambda v: json.dumps(v, default=str).encode("utf-8")
+)
 
 event_times = defaultdict(deque)
 template_counter = Counter()
@@ -98,10 +92,6 @@ category_models: dict = {
     for cat in LOG_CATEGORIES
 }
 
-# =====================================================
-# STATE — RF
-# =====================================================
-
 rf_model         = None
 rf_scaler        = None
 rf_trained       = False
@@ -110,26 +100,80 @@ rf_buffer_y      = []
 rf_score_history = deque(maxlen=SCORE_HISTORY)
 RF_BUFFER_SIZE   = 500
 
-# =====================================================
-# LOC 2 — STATE Etapa 5: LSTM
-# =====================================================
-
 lstm_model         = None
 lstm_scaler        = None
 lstm_trained       = False
 lstm_score_history = deque(maxlen=SCORE_HISTORY)
-LSTM_BUFFER_SIZE   = 300   # minim secvențe complete pentru antrenare
+LSTM_BUFFER_SIZE   = 300
 
-# Coada glisantă per entitate — ultimele SEQ_LEN vectori combinați
 entity_sequences: dict = defaultdict(lambda: deque(maxlen=SEQ_LEN))
 
-# Buffer de antrenare LSTM
-lstm_buffer_X = []   # list of arrays shape (SEQ_LEN, 22)
-lstm_buffer_y = []   # list of 0/1
+lstm_buffer_X = []
+lstm_buffer_y = []
 
-# =====================================================
-# MAIN LOOP
-# =====================================================
+def build_alert_payload(
+    template_id, entity_id, ts, log_category,
+    raw_log, rule_result,
+    stat_score, behavior_score, cat_score,
+    template_rarity, burst_score,
+    score_rf, score_lstm,
+    sem_feats, final_risk, level
+) -> dict:
+    if cat_score is not None and stat_score is not None:
+        if_score = round(
+            0.25 * stat_score +
+            0.20 * (behavior_score or 0) +
+            0.10 * cat_score, 4
+        )
+    elif stat_score is not None:
+        if_score = round(
+            0.30 * stat_score +
+            0.25 * (behavior_score or 0), 4
+        )
+    else:
+        if_score = None
+
+    return {
+        "event_id":      str(uuid.uuid4()),
+        "timestamp":     round(float(ts), 3),
+        "timestamp_iso": datetime.fromtimestamp(ts).isoformat(),
+
+        "raw_log":      raw_log[:500],
+        "template_id":  template_id,
+        "log_category": log_category,
+        "entity_id":    entity_id,
+
+        "rule_triggered": bool(rule_result.triggered),
+        "rule_score":     round(float(rule_result.score), 4),
+        "rule_shortcut":  bool(rule_result.shortcut),
+        "rules_fired":    list(rule_result.rules),
+
+        "stat_score":     round(float(stat_score), 4)     if stat_score     is not None else None,
+        "behavior_score": round(float(behavior_score), 4) if behavior_score is not None else None,
+        "cat_score":      round(float(cat_score), 4)      if cat_score      is not None else None,
+        "rarity":         round(float(template_rarity), 4),
+        "burst":          round(float(burst_score), 4),
+
+        "rf_score":   round(float(score_rf), 4)   if score_rf   is not None else None,
+        "lstm_score": round(float(score_lstm), 4) if score_lstm is not None else None,
+
+        "entity_context": {
+            "failed_auth": int(sem_feats["entity_failed_auth_5m"]),
+            "sudo_count":  int(sem_feats["entity_sudo_count_5m"]),
+            "uploads":     int(sem_feats["entity_upload_count_5m"]),
+            "lsass":       int(sem_feats["entity_lsass_count_5m"]),
+        },
+
+        "score_breakdown": {
+            "rule_engine":      round(float(rule_result.score), 4),
+            "isolation_forest": if_score,
+            "random_forest":    round(float(score_rf), 4)   if score_rf   is not None else None,
+            "lstm":             round(float(score_lstm), 4) if score_lstm is not None else None,
+        },
+
+        "final_risk": round(float(final_risk), 4),
+        "risk_level": level,
+    }
 
 for msg in consumer:
 
@@ -138,10 +182,6 @@ for msg in consumer:
     template_id = features.get("template_id", "unknown")
     ts          = features.get("timestamp", 0.0)
     entity_id   = get_entity(payload)
-
-    # =====================================================
-    # TEMPORAL FEATURES
-    # =====================================================
 
     dq = event_times[template_id]
     dq.append(ts)
@@ -153,10 +193,6 @@ for msg in consumer:
     inter_arrival = dq[-1] - dq[-2] if len(dq) >= 2 else 0.0
     burst_score   = min(count_1m / 30.0, 1.0)
 
-    # =====================================================
-    # TEMPLATE RARITY + ENTITY DEVIATION
-    # =====================================================
-
     template_counter[template_id] += 1
     total_templates  = sum(template_counter.values())
     frequency        = template_counter[template_id] / total_templates
@@ -166,10 +202,6 @@ for msg in consumer:
     entity_total     = sum(entity_template_counter[entity_id].values())
     entity_freq      = entity_template_counter[entity_id][template_id] / entity_total
     entity_deviation = 1 - entity_freq
-
-    # =====================================================
-    # ETAPA 1 — FEATURE ENGINEERING
-    # =====================================================
 
     sem_feats       = extract_semantic_features(payload, entity_id, ts)
     stat_vector     = build_stat_vector(sem_feats, ts, count_1m, count_5m,
@@ -181,17 +213,8 @@ for msg in consumer:
     skip_training = is_obviously_malicious(sem_feats) or \
                     is_contaminated_entity_vector(sem_feats)
 
-    # =====================================================
-    # LOC 3 — Actualizare secvență per entitate
-    # ÎNAINTE de orice model — secvența trebuie să fie
-    # disponibilă și în shortcut path
-    # =====================================================
     combined_vector = np.concatenate([stat_vector, behavior_vector])
     entity_sequences[entity_id].append(combined_vector)
-
-    # =====================================================
-    # ETAPA 3A — IF Statistic Global
-    # =====================================================
 
     if not stat_trained:
         if not skip_training:
@@ -219,10 +242,6 @@ for msg in consumer:
             print(f"🔄 Statistical Model (global) retrained "
                   f"(buffer={len(retrain_buffer_stat)} vectori)")
 
-    # =====================================================
-    # ETAPA 3B — IF Comportamental Global
-    # =====================================================
-
     if not behavior_trained:
         if not skip_training:
             training_buffer_behav.append(behavior_vector)
@@ -248,10 +267,6 @@ for msg in consumer:
             events_since_retrain_behav = 0
             print(f"🔄 Behavioral Model (global) retrained "
                   f"(buffer={len(retrain_buffer_behav)} vectori)")
-
-    # =====================================================
-    # ETAPA 3C — IF per Categorie
-    # =====================================================
 
     cat_state = category_models[log_category]
 
@@ -280,10 +295,6 @@ for msg in consumer:
             print(f"🔄 Category Model [{log_category}] retrained "
                   f"(buffer={len(cat_state['retrain_buf'])} vectori)")
 
-    # =====================================================
-    # ETAPA 2 — RULE ENGINE
-    # =====================================================
-
     rule_result = apply_rule_engine(sem_feats, payload)
 
     if rule_result.shortcut:
@@ -291,14 +302,12 @@ for msg in consumer:
         level      = "HIGH"
         stat_score = behavior_score = None
 
-        # RF — label 1 sigur pe shortcut
         rf_buffer_X.append(combined_vector)
         rf_buffer_y.append(1)
         if not rf_trained and len(rf_buffer_y) >= RF_BUFFER_SIZE:
             rf_model, rf_scaler = train_rf_model(rf_buffer_X, rf_buffer_y)
             rf_trained = True
 
-        # LOC 4A — LSTM: label 1 sigur pe shortcut
         current_seq = list(entity_sequences[entity_id])
         if len(current_seq) >= SEQ_LEN // 2:
             lstm_buffer_X.append(current_seq)
@@ -308,6 +317,16 @@ for msg in consumer:
                     lstm_buffer_X, lstm_buffer_y
                 )
                 lstm_trained = True
+
+        alert = build_alert_payload(
+            template_id, entity_id, ts, log_category,
+            payload.get("log", ""), rule_result,
+            None, None, None,
+            template_rarity, burst_score,
+            None, None,
+            sem_feats, final_risk, level
+        )
+        producer.send("ml_alerts", value=alert)
 
         print(f"""
 {'='*50}
@@ -328,10 +347,6 @@ Risk Level:  {level}
 """)
         continue
 
-    # =====================================================
-    # SCORING IF
-    # =====================================================
-
     stat_scaled        = stat_scaler.transform([stat_vector])
     raw_stat_score     = -stat_model.score_samples(stat_scaled)[0]
     stat_score_history.append(raw_stat_score)
@@ -349,10 +364,6 @@ Risk Level:  {level}
             stat_vector, cat_state["score_history"]
         )
 
-    # =====================================================
-    # ENSEMBLE IF
-    # =====================================================
-
     if cat_score is not None:
         if_combined = (
             0.25 * stat_score +
@@ -369,10 +380,6 @@ Risk Level:  {level}
             0.15 * burst_score
         )
 
-    # =====================================================
-    # ETAPA 4 — Random Forest
-    # =====================================================
-
     label = derive_label(rule_result, if_combined)
 
     if label is not None and not skip_training:
@@ -388,25 +395,18 @@ Risk Level:  {level}
         score_rf = score_rf_model(rf_model, rf_scaler, combined_vector,
                                   rf_score_history)
 
-    # =====================================================
-    # LOC 4B — ETAPA 5: LSTM
-    # =====================================================
-
-    # Adaugă secvența în buffer LSTM cu același label ca RF
     if label is not None and not skip_training:
         current_seq = list(entity_sequences[entity_id])
         if len(current_seq) >= SEQ_LEN // 2:
             lstm_buffer_X.append(current_seq)
             lstm_buffer_y.append(label)
 
-    # Antrenare LSTM când avem suficiente secvențe
     if not lstm_trained and len(lstm_buffer_y) >= LSTM_BUFFER_SIZE:
         lstm_model, lstm_scaler = train_lstm_model(
             lstm_buffer_X, lstm_buffer_y
         )
         lstm_trained = True
 
-    # Scorare LSTM dacă modelul e antrenat
     score_lstm = None
     if lstm_trained:
         score_lstm = score_lstm_model(
@@ -415,12 +415,7 @@ Risk Level:  {level}
             lstm_score_history
         )
 
-    # =====================================================
-    # ENSEMBLE FINAL (IF + RF + LSTM + Rule Engine)
-    # =====================================================
-
     if score_rf is not None and score_lstm is not None:
-        # Ensemble complet
         if cat_score is not None:
             if_combined = (
                 0.18 * stat_score +
@@ -441,7 +436,6 @@ Risk Level:  {level}
                 0.08 * burst_score
             )
     elif score_rf is not None:
-        # RF disponibil, LSTM în bootstrap
         if cat_score is not None:
             if_combined = (
                 0.20 * stat_score +
@@ -459,7 +453,6 @@ Risk Level:  {level}
                 0.15 * template_rarity +
                 0.10 * burst_score
             )
-    # else: if_combined rămâne din IF — faza bootstrap
 
     if rule_result.triggered:
         rf_boost   = score_rf   if (score_rf   is not None and score_rf   > 0.85) else 0.0
@@ -477,9 +470,15 @@ Risk Level:  {level}
     else:
         level = "LOW"
 
-    # =====================================================
-    # OUTPUT
-    # =====================================================
+    alert = build_alert_payload(
+        template_id, entity_id, ts, log_category,
+        payload.get("log", ""), rule_result,
+        stat_score, behavior_score, cat_score,
+        template_rarity, burst_score,
+        score_rf, score_lstm,
+        sem_feats, final_risk, level
+    )
+    producer.send("ml_alerts", value=alert)
 
     icon           = "🔴" if level == "HIGH" else ("🟡" if level == "MEDIUM" else "🟢")
     cat_score_str  = f"{round(cat_score, 3)}"   if cat_score  is not None else "N/A (training)"

@@ -26,13 +26,8 @@ from labelizare import derive_label
 from antrenareLSTM import train_lstm_model, SEQ_LEN
 from scoreLSTM import score_lstm_model
 
-# =====================================================
-# CONFIG EVALUARE
-# =====================================================
-
-EVAL_SIZE = 3000        # numărul de evenimente evaluate după warm-up
-WARMUP_EVENTS = 1000    # evenimente consumate pentru warm-up modele
-
+EVAL_SIZE = 3000
+WARMUP_EVENTS = 1000
 WINDOW_1M = 60
 WINDOW_5M = 300
 BUFFER_SIZE = 400
@@ -46,20 +41,12 @@ LOG_CATEGORIES = ["auth", "web", "network", "system", "alert"]
 RF_BUFFER_SIZE = 500
 LSTM_BUFFER_SIZE = 300
 
-# =====================================================
-# KAFKA
-# =====================================================
-
 consumer = KafkaConsumer(
     "logs_normalized",
     bootstrap_servers="localhost:29092",
     auto_offset_reset="earliest",
     group_id=None,
 )
-
-# =====================================================
-# STATE — identic cu main.py
-# =====================================================
 
 event_times = defaultdict(deque)
 template_counter = Counter()
@@ -101,22 +88,14 @@ entity_sequences: dict = defaultdict(lambda: deque(maxlen=SEQ_LEN))
 lstm_buffer_X = []
 lstm_buffer_y = []
 
-# =====================================================
-# COLECTARE REZULTATE
-# =====================================================
+results = []
 
-results = []   # fiecare element: dict cu scorurile și labelul
-
-total_events  = 0   # toate evenimentele procesate
+total_events  = 0
 warmup_done   = False
-eval_count    = 0   # evenimente în faza de evaluare
+eval_count    = 0
 
 print(f"🔄 Pornind evaluare — warm-up: {WARMUP_EVENTS} eventi, evaluare: {EVAL_SIZE} eventi")
 print("─" * 60)
-
-# =====================================================
-# MAIN LOOP — identic cu main.py + colectare rezultate
-# =====================================================
 
 for msg in consumer:
 
@@ -128,7 +107,6 @@ for msg in consumer:
 
     total_events += 1
 
-    # ── Temporal features ──────────────────────────────
     dq = event_times[template_id]
     dq.append(ts)
     while dq and dq[0] < ts - WINDOW_5M:
@@ -139,7 +117,6 @@ for msg in consumer:
     inter_arrival = dq[-1] - dq[-2] if len(dq) >= 2 else 0.0
     burst_score   = min(count_1m / 30.0, 1.0)
 
-    # ── Template rarity + entity deviation ─────────────
     template_counter[template_id] += 1
     total_templates = sum(template_counter.values())
     frequency       = template_counter[template_id] / total_templates
@@ -150,7 +127,6 @@ for msg in consumer:
     entity_freq     = entity_template_counter[entity_id][template_id] / entity_total
     entity_deviation = 1 - entity_freq
 
-    # ── Feature engineering ────────────────────────────
     sem_feats       = extract_semantic_features(payload, entity_id, ts)
     stat_vector     = build_stat_vector(sem_feats, ts, count_1m, count_5m,
                                         inter_arrival, burst_score)
@@ -163,7 +139,6 @@ for msg in consumer:
     combined_vector = np.concatenate([stat_vector, behavior_vector])
     entity_sequences[entity_id].append(combined_vector)
 
-    # ── IF Statistic Global ────────────────────────────
     if not stat_trained:
         if not skip_training:
             training_buffer_stat.append(stat_vector)
@@ -185,7 +160,6 @@ for msg in consumer:
                 contamination=STAT_CONTAMINATION)
             events_since_retrain_stat = 0
 
-    # ── IF Comportamental Global ───────────────────────
     if not behavior_trained:
         if not skip_training:
             training_buffer_behav.append(behavior_vector)
@@ -207,7 +181,6 @@ for msg in consumer:
                 contamination=BEHAV_CONTAMINATION)
             events_since_retrain_behav = 0
 
-    # ── IF per Categorie ───────────────────────────────
     cat_state = category_models[log_category]
     if not cat_state["trained"]:
         if not skip_training:
@@ -229,10 +202,8 @@ for msg in consumer:
                 contamination=STAT_CONTAMINATION)
             cat_state["events_since"] = 0
 
-    # ── Rule Engine ────────────────────────────────────
     rule_result = apply_rule_engine(sem_feats, payload)
 
-    # ── IF Scoring ─────────────────────────────────────
     stat_scaled    = stat_scaler.transform([stat_vector])
     raw_stat       = -stat_model.score_samples(stat_scaled)[0]
     stat_score_history.append(raw_stat)
@@ -255,7 +226,6 @@ for msg in consumer:
         if_combined = (0.30*stat_score + 0.25*behavior_score +
                        0.20*template_rarity + 0.15*burst_score)
 
-    # ── RF ─────────────────────────────────────────────
     label = derive_label(rule_result, if_combined)
 
     if rule_result.shortcut:
@@ -275,7 +245,6 @@ for msg in consumer:
         score_rf = score_rf_model(rf_model, rf_scaler, combined_vector,
                                   rf_score_history)
 
-    # ── LSTM ───────────────────────────────────────────
     if label is not None and not skip_training:
         current_seq = list(entity_sequences[entity_id])
         if len(current_seq) >= SEQ_LEN // 2:
@@ -295,7 +264,6 @@ for msg in consumer:
             list(entity_sequences[entity_id]),
             lstm_score_history)
 
-    # ── Ensemble final ─────────────────────────────────
     if score_rf is not None and score_lstm is not None:
         if cat_score is not None:
             if_combined = (0.18*stat_score + 0.13*behavior_score +
@@ -325,8 +293,6 @@ for msg in consumer:
 
     final_risk = min(final_risk, 1.0)
 
-    # ── Warm-up check ──────────────────────────────────
-    # Nu colectăm rezultate până când toate modelele sunt antrenate
     all_trained = (stat_trained and behavior_trained and
                    rf_trained and lstm_trained)
 
@@ -342,11 +308,6 @@ for msg in consumer:
         print(f"\n✅ Warm-up complet la {total_events} evenimente")
         print(f"🎯 Începe colectarea pentru evaluare ({EVAL_SIZE} evenimente)...\n")
 
-    # ── Derivare label ground truth ────────────────────
-    # Ground truth = ce decide Rule Engine cu certitudine
-    # shortcut (≥0.9) = malițios sigur → label 1
-    # score=0 și IF mic → benigni sigur → label 0
-    # restul → excludem din calculul metricilor
     if rule_result.shortcut:
         gt_label = 1
     elif not rule_result.triggered and if_combined <= 0.25:
@@ -358,7 +319,6 @@ for msg in consumer:
     else:
         gt_label = None   # zonă gri — excludem din metrici
 
-    # ── Colectare rezultat ─────────────────────────────
     results.append({
         "gt_label":     gt_label,
         "final_risk":   final_risk,
@@ -378,15 +338,11 @@ for msg in consumer:
     if eval_count >= EVAL_SIZE:
         break
 
-# =====================================================
-# CALCULUL METRICILOR
-# =====================================================
 
 print("\n" + "="*60)
 print("📊 CALCUL METRICI")
 print("="*60)
 
-# Filtrăm doar evenimentele cu label cert (nu zona gri)
 labeled = [r for r in results if r["gt_label"] is not None]
 print(f"\nTotal colectate:  {len(results)}")
 print(f"Cu label cert:    {len(labeled)}")
@@ -404,7 +360,6 @@ print(f"Benigne (0):      {int(n_neg)}")
 
 
 def compute_metrics(scores, gt, threshold=0.5, name=""):
-    """Calculează TP, FP, TN, FN și metricile derivate."""
     pred = (np.array(scores) >= threshold).astype(int)
 
     TP = int(((pred == 1) & (gt == 1)).sum())
@@ -429,16 +384,12 @@ def compute_metrics(scores, gt, threshold=0.5, name=""):
         "accuracy":  accuracy,
     }
 
-
-# Scoruri per model — normalizare la [0,1] cu threshold 0.5
 if_scores   = [r["if_score"]   for r in labeled]
 rf_scores   = [r["rf_score"]   if r["rf_score"]   is not None else 0.5 for r in labeled]
 lstm_scores = [r["lstm_score"] if r["lstm_score"] is not None else 0.5 for r in labeled]
 rule_scores = [min(r["rule_score"], 1.0) for r in labeled]
 final_scores = [r["final_risk"] for r in labeled]
 
-# Threshold pentru IF: 0.4 (pragul MEDIUM)
-# Threshold pentru RF/LSTM/Ensemble: 0.5
 metrics = [
     compute_metrics(rule_scores,  gt, threshold=0.5,  name="Rule Engine"),
     compute_metrics(if_scores,    gt, threshold=0.4,  name="Isolation Forest"),
@@ -446,10 +397,6 @@ metrics = [
     compute_metrics(lstm_scores,  gt, threshold=0.5,  name="LSTM"),
     compute_metrics(final_scores, gt, threshold=0.65, name="Ensemble Final"),
 ]
-
-# =====================================================
-# RAPORT FINAL
-# =====================================================
 
 print("\n")
 print("╔" + "═"*62 + "╗")
@@ -474,11 +421,9 @@ for m in metrics:
 
 print("╠" + "═"*62 + "╣")
 
-# Cel mai bun model după F1
 best = max(metrics, key=lambda x: x["f1"])
 print(f"║  Cel mai bun F1: {best['name']} ({best['f1']:.3f}){'':>20}║")
 
-# Ensemble vs IF (îmbunătățire)
 if_m  = next(m for m in metrics if "Isolation" in m["name"])
 ens_m = next(m for m in metrics if "Ensemble"  in m["name"])
 delta_f1 = ens_m["f1"] - if_m["f1"]
@@ -486,7 +431,6 @@ print(f"║  Ensemble vs IF: Δ F1 = {delta_f1:+.3f}{'':>32}║")
 
 print("╠" + "═"*62 + "╣")
 
-# Statistici suplimentare
 shortcut_count = sum(1 for r in results if r["rule_shortcut"])
 shortcut_rate  = shortcut_count / len(results) * 100 if results else 0
 
@@ -497,7 +441,6 @@ low_count    = sum(1 for r in results if r["final_risk"] <= 0.4)
 print(f"║  Shortcut Rate (Rule Engine):  {shortcut_rate:>5.1f}%{'':>22}║")
 print(f"║  Distribuție: HIGH={high_count} MEDIUM={medium_count} LOW={low_count}{'':>14}║")
 
-# Agreement: câte HIGH au IF + RF + LSTM toate > 0.5
 agreement = sum(
     1 for r in results
     if (r["final_risk"] > 0.65 and
@@ -511,7 +454,6 @@ print(f"║  Model Agreement pe HIGH:      {agreement_rate:>5.1f}%{'':>22}║")
 
 print("╠" + "═"*62 + "╣")
 
-# Matrice de confuzie pentru Ensemble
 ens = next(m for m in metrics if "Ensemble" in m["name"])
 print(f"║  Matrice confuzie Ensemble Final:{'':>27}║")
 print(f"║    TP={ens['TP']:>5}  FP={ens['FP']:>5}  TN={ens['TN']:>5}  FN={ens['FN']:>5}{'':>13}║")

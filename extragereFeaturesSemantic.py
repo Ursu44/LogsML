@@ -305,7 +305,7 @@ def extract_semantic_features(payload: dict, entity_id: str, ts: float) -> dict:
     mat_first_seen_ip   = features.get("is_first_seen_for_ip", 0) or 0
 
     return {
-        "entity_id":                 entity_id,   # necesar în apply_rule_engine pentru Fix 12
+        "entity_id":                 entity_id,
 
         "has_reverse_shell":         has_reverse_shell,
         "has_download_exec":         has_download_exec,
