@@ -49,7 +49,7 @@ LOG_CATEGORIES = ["auth", "web", "network", "system", "alert"]
 
 consumer = KafkaConsumer(
     "logs_normalized",
-    bootstrap_servers="localhost:29092",
+    bootstrap_servers="localhost:9092",
     auto_offset_reset="earliest",
     group_id=None,
 )
