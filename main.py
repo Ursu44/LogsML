@@ -47,6 +47,24 @@ RETRAIN_WINDOW   = 600
 
 LOG_CATEGORIES = ["auth", "web", "network", "system", "alert"]
 
+# Modificarea 1 — Praguri per categorie
+THRESHOLDS = {
+    "auth":    {"HIGH": 0.55, "MEDIUM": 0.35},
+    "network": {"HIGH": 0.75, "MEDIUM": 0.50},
+    "web":     {"HIGH": 0.65, "MEDIUM": 0.40},
+    "system":  {"HIGH": 0.62, "MEDIUM": 0.38},
+    "alert":   {"HIGH": 0.55, "MEDIUM": 0.30},
+}
+
+# Modificarea 3 — Fereastră temporală adaptivă per categorie
+ENTITY_WINDOWS = {
+    "auth":    300,
+    "network": 60,
+    "system":  600,
+    "web":     120,
+    "alert":   300,
+}
+
 consumer = KafkaConsumer(
     "logs_normalized",
     bootstrap_servers="kafka:9092",
@@ -61,6 +79,7 @@ producer = KafkaProducer(
 
 event_times = defaultdict(deque)
 template_counter = Counter()
+template_counter_per_category = defaultdict(Counter)  # Modificarea 2
 entity_template_counter = defaultdict(Counter)
 
 training_buffer_stat  = []
@@ -183,9 +202,15 @@ for msg in consumer:
     ts          = features.get("timestamp", 0.0)
     entity_id   = get_entity(payload)
 
+    # ── Clasificare categorie ──────────────────────────────────────────
+    log_category = classify_log_category(payload)
+
+    # ── Fereastră temporală adaptivă — Modificarea 3 ──────────────────
+    window = ENTITY_WINDOWS.get(log_category, WINDOW_5M)
+
     dq = event_times[template_id]
     dq.append(ts)
-    while dq and dq[0] < ts - WINDOW_5M:
+    while dq and dq[0] < ts - window:
         dq.popleft()
 
     count_1m      = sum(1 for t in dq if t >= ts - WINDOW_1M)
@@ -193,10 +218,15 @@ for msg in consumer:
     inter_arrival = dq[-1] - dq[-2] if len(dq) >= 2 else 0.0
     burst_score   = min(count_1m / 30.0, 1.0)
 
+    # ── Template rarity per categorie — Modificarea 2 ─────────────────
     template_counter[template_id] += 1
-    total_templates  = sum(template_counter.values())
-    frequency        = template_counter[template_id] / total_templates
-    template_rarity  = 1 - frequency
+    total_templates = sum(template_counter.values())
+    frequency       = template_counter[template_id] / total_templates
+
+    template_counter_per_category[log_category][template_id] += 1
+    cat_total        = sum(template_counter_per_category[log_category].values())
+    cat_frequency    = template_counter_per_category[log_category][template_id] / cat_total
+    template_rarity  = 1 - cat_frequency
 
     entity_template_counter[entity_id][template_id] += 1
     entity_total     = sum(entity_template_counter[entity_id].values())
@@ -209,7 +239,6 @@ for msg in consumer:
     behavior_vector = build_behavior_vector(sem_feats, template_rarity,
                                             entity_deviation, burst_score)
 
-    log_category  = classify_log_category(payload)
     skip_training = is_obviously_malicious(sem_feats) or \
                     is_contaminated_entity_vector(sem_feats)
 
@@ -380,7 +409,8 @@ Risk Level:  {level}
             0.15 * burst_score
         )
 
-    label = derive_label(rule_result, if_combined)
+    # ── Modificarea 4 — derive_label cu context ───────────────────────
+    label = derive_label(rule_result, if_combined, sem_feats)
 
     if label is not None and not skip_training:
         rf_buffer_X.append(combined_vector)
@@ -454,18 +484,60 @@ Risk Level:  {level}
                 0.10 * burst_score
             )
 
+    # ── Modificarea 5 — LSTM confidence proporțional ──────────────────
+    current_seq_len = len(entity_sequences[entity_id])
+    lstm_confidence = min(current_seq_len / SEQ_LEN, 1.0)
+    # Seq=1/10  → confidence=0.1
+    # Seq=5/10  → confidence=0.5
+    # Seq=10/10 → confidence=1.0
+
     if rule_result.triggered:
-        rf_boost   = score_rf   if (score_rf   is not None and score_rf   > 0.85) else 0.0
-        lstm_boost = score_lstm if (score_lstm is not None and score_lstm > 0.85) else 0.0
-        final_risk = max(rule_result.score, if_combined, rf_boost, lstm_boost)
+        rf_boost = score_rf if (score_rf is not None and
+                                score_rf > 0.85) else 0.0
+
+        # Boost LSTM doar dacă secvența e suficient de lungă
+        if lstm_confidence >= 0.5:
+            lstm_boost = score_lstm if (score_lstm is not None and
+                                        score_lstm > 0.85) else 0.0
+        else:
+            lstm_boost = 0.0  # secvență prea scurtă — nu aplicăm boost
+
+        final_risk = max(rule_result.score, if_combined,
+                         rf_boost, lstm_boost)
     else:
+        # Recalculare if_combined cu lstm_weight scalat dacă secvență scurtă
+        if lstm_confidence < 0.5 and score_lstm is not None \
+                and score_rf is not None:
+            lstm_weight = 0.15 * lstm_confidence
+            if cat_score is not None:
+                if_combined = (
+                    0.18 * stat_score +
+                    0.13 * behavior_score +
+                    0.07 * cat_score +
+                    0.18 * score_rf +
+                    lstm_weight * score_lstm +
+                    0.10 * template_rarity +
+                    0.07 * burst_score
+                )
+            else:
+                if_combined = (
+                    0.20 * stat_score +
+                    0.15 * behavior_score +
+                    0.18 * score_rf +
+                    lstm_weight * score_lstm +
+                    0.12 * template_rarity +
+                    0.08 * burst_score
+                )
+
         final_risk = if_combined
 
     final_risk = min(final_risk, 1.0)
 
-    if final_risk > 0.65:
+    # ── Modificarea 1 — Praguri per categorie ─────────────────────────
+    thresholds = THRESHOLDS.get(log_category, {"HIGH": 0.65, "MEDIUM": 0.40})
+    if final_risk > thresholds["HIGH"]:
         level = "HIGH"
-    elif final_risk > 0.4:
+    elif final_risk > thresholds["MEDIUM"]:
         level = "MEDIUM"
     else:
         level = "LOW"
