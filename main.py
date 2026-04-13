@@ -24,6 +24,7 @@ from preiaEntitate import get_entity
 from socreIF import score_if_model
 from vectorContaminatVerifcare import is_contaminated_entity_vector
 
+
 from antrenareRF import train_rf_model
 from socreRF import score_rf_model
 from labelizare import derive_label
