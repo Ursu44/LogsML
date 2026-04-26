@@ -50,6 +50,7 @@ LOG_CATEGORIES = ["auth", "web", "network", "system", "alert"]
 
 
 THRESHOLDS = {
+
     "auth":    {"HIGH": 0.77, "MEDIUM": 0.47},
     "network": {"HIGH": 0.88, "MEDIUM": 0.57},
     "web":     {"HIGH": 0.79, "MEDIUM": 0.49},
