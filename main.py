@@ -47,35 +47,21 @@ RETRAIN_WINDOW   = 600
 
 LOG_CATEGORIES = ["auth", "web", "network", "system", "alert"]
 
-# ── Praguri per categorie ─────────────────────────────────────────
-# Justificare:
-#   auth HIGH=0.55:    template-uri frecvente → behavior_score mic sistematic
-#                      pragul mic compensează această limitare IF
-#   network HIGH=0.75: IP-uri unice → rarity=1.0 artificial
-#                      pragul mare filtrează zgomotul
-#   web HIGH=0.65:     request-uri frecvente dar context malițios trebuie prins
-#   system HIGH=0.62:  system events variate
-#   alert HIGH=0.55:   alertele externe au deja filtrat zgomotul
+
 
 THRESHOLDS = {
-    "auth":    {"HIGH": 0.68, "MEDIUM": 0.45},
-    "network": {"HIGH": 0.80, "MEDIUM": 0.55},
-    "web":     {"HIGH": 0.72, "MEDIUM": 0.48},
-    "system":  {"HIGH": 0.72, "MEDIUM": 0.48},
-    "alert":   {"HIGH": 0.67, "MEDIUM": 0.42},
+    "auth":    {"HIGH": 0.72, "MEDIUM": 0.41},
+    "network": {"HIGH": 0.83, "MEDIUM": 0.53},
+    "web":     {"HIGH": 0.76, "MEDIUM": 0.46},
+    "system":  {"HIGH": 0.76, "MEDIUM": 0.46},
+    "alert":   {"HIGH": 0.71, "MEDIUM": 0.44},
 }
 
-# ── Boost threshold ───────────────────────────────────────────────
-# 0.92 în loc de 0.85 — mai restrictiv pentru a evita false pozitive
-# RF=0.87 → no boost (ambiguu)
-# RF=0.97 → boost activat (certitudine ridicată)
+
 BOOST_THRESHOLD = 0.92
 
-# ── LSTM confidence minimum pentru boost ─────────────────────────
-# Sub 0.5 = mai puțin de 5 evenimente → predicție instabilă
 LSTM_CONFIDENCE_MIN = 0.5
 
-# ── Fereastră temporală adaptivă per categorie ───────────────────
 ENTITY_WINDOWS = {
     "auth":    300,
     "network": 60,
