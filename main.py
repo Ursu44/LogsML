@@ -62,7 +62,7 @@ THRESHOLDS = {
     "network": {"HIGH": 0.80, "MEDIUM": 0.55},
     "web":     {"HIGH": 0.72, "MEDIUM": 0.48},
     "system":  {"HIGH": 0.72, "MEDIUM": 0.48},
-    "alert":   {"HIGH": 0.65, "MEDIUM": 0.42},
+    "alert":   {"HIGH": 0.67, "MEDIUM": 0.42},
 }
 
 # ── Boost threshold ───────────────────────────────────────────────
