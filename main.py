@@ -48,11 +48,11 @@ RETRAIN_WINDOW   = 600
 LOG_CATEGORIES = ["auth", "web", "network", "system", "alert"]
 
 THRESHOLDS = {
-    "auth":    {"HIGH": 0.77, "MEDIUM": 0.47},
-    "network": {"HIGH": 0.88, "MEDIUM": 0.57},
-    "web":     {"HIGH": 0.79, "MEDIUM": 0.49},
-    "system":  {"HIGH": 0.79, "MEDIUM": 0.52},
-    "alert":   {"HIGH": 0.77, "MEDIUM": 0.47},
+    "auth":    {"HIGH": 0.80, "MEDIUM": 0.44},
+    "network": {"HIGH": 0.91, "MEDIUM": 0.53},
+    "web":     {"HIGH": 0.82, "MEDIUM": 0.45},
+    "system":  {"HIGH": 0.82, "MEDIUM": 0.45},
+    "alert":   {"HIGH": 0.81, "MEDIUM": 0.43},
 }
 
 
