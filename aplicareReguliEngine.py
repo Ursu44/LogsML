@@ -1,6 +1,7 @@
 from rezultatRegula import RuleResult, _fire
 
 RULE_SHORTCUT_THRESHOLD = 0.9
+
 def apply_rule_engine(sem_feats: dict, payload: dict) -> RuleResult:
     result = RuleResult()
 
@@ -21,38 +22,43 @@ def apply_rule_engine(sem_feats: dict, payload: dict) -> RuleResult:
 
     # ── Grupul B — Credențiale ───────────────────────────────────
 
-    # B1: lsass singur — NU mai e shortcut la 1
-    # lsass=1 poate fi AV scan sau diagnostic legitim
-    # shortcut doar de la lsass >= 2
-    if lsass >= 2:
+    # B1: shortcut doar de la lsass >= 3
+    # lsass=1 → AV scan sau diagnostic legitim → scor moderat
+    # lsass=2 → suspect → scor ridicat fără shortcut
+    # lsass>=3 → campanie extragere credențiale → shortcut cert
+    if lsass >= 3:
         _fire(result, f"B1:lsass_access({lsass}x)", 0.95,
               shortcut=True)
+    elif lsass == 2:
+        _fire(result, f"B1:lsass_access({lsass}x)", 0.75)
     elif lsass == 1:
-        # lsass=1 → suspect dar nu cert → scor moderat fără shortcut
-        _fire(result, "B1:lsass_single_access", 0.65)
+        _fire(result, "B1:lsass_single_access", 0.55)
 
     # B2: campanie lsass + brute force
-    if lsass >= 3 and failed >= 8:
+    # shortcut doar cu failed >= 10 — mai restrictiv
+    if lsass >= 3 and failed >= 10:
         _fire(result,
               f"B2:lsass_campaign({lsass}x)+brute_force({failed}x)",
               0.95, shortcut=True)
     elif lsass >= 3:
+        # lsass >= 3 fără brute force masiv → scor ridicat fără shortcut
         _fire(result,
               f"B2:lsass_campaign({lsass}x)",
-              0.90, shortcut=True)
+              0.80)
 
     if sem_feats.get("lateral_movement", 0):
         _fire(result, "B3:lateral_movement", 1.0, shortcut=True)
 
-    # B4: brute force — ridicat pragul de la 5 la 8
-    # 5-7 failed auth poate fi utilizator care uită parola
-    # shortcut doar de la 12+
-    if failed >= 12:
-        score = min(0.6 + failed * 0.03, 0.95)
+    # B4: brute force
+    # shortcut doar de la 15+ — foarte masiv
+    # 8-14 → scor ridicat dar intră în ML
+    # sub 8 → ignorat
+    if failed >= 15:
+        score = min(0.6 + failed * 0.02, 0.90)
         _fire(result, f"B4:auth_failures({failed}x/5min)",
               score, shortcut=True)
     elif failed >= 8:
-        score = min(0.5 + failed * 0.03, 0.85)
+        score = min(0.45 + failed * 0.02, 0.75)
         _fire(result, f"B4:auth_failures({failed}x/5min)", score)
 
     # ── Grupul C — Fișiere ───────────────────────────────────────
@@ -88,10 +94,11 @@ def apply_rule_engine(sem_feats: dict, payload: dict) -> RuleResult:
 
     # ── Grupul G — Pattern-uri compuse ───────────────────────────
 
-    # G2: ridicat pragul — failed >= 6 și sudo >= 3
-    # failed=3 + sudo=1 e prea comun și normal
-    if failed >= 6 and sudo >= 3:
-        _fire(result, "G2:failed_auth_then_sudo", 0.65)
+    # G2: failed >= 8 și sudo >= 5 — mai restrictiv
+    # failed=6 + sudo=3 e prea comun în medii normale
+    # failed=8 + sudo=5 indică escaladare post-brute-force
+    if failed >= 8 and sudo >= 5:
+        _fire(result, "G2:failed_auth_then_sudo", 0.68)
 
     if sem_feats.get("entity_upload_count_5m", 0) >= 1 and \
        sem_feats.get("writes_sensitive_path", 0):
@@ -103,33 +110,46 @@ def apply_rule_engine(sem_feats: dict, payload: dict) -> RuleResult:
               1.0, shortcut=True)
 
     # ── Grupul H — Context masiv ─────────────────────────────────
+    # Rezolvă cazurile cu IF behavior=0 și template frecvent
+    # dar context cert malițios — independent de template
 
-    # H1: lsass >= 2 deja prins de B1
-    # Păstrăm doar pentru combinație cu brute force masiv
-    if lsass >= 2 and failed >= 10:
+    # H1: lsass >= 2 + brute force masiv
+    # shortcut doar cu failed >= 12
+    if lsass >= 2 and failed >= 12:
         _fire(result,
               f"H1:lsass({lsass}x)+brute_force({failed}x)",
               0.95, shortcut=True)
+    elif lsass >= 2 and failed >= 8:
+        # lsass=2 + failed moderat → suspect dar nu cert shortcut
+        _fire(result,
+              f"H1:lsass({lsass}x)+brute_force({failed}x)",
+              0.78)
 
-    # H2: Brute force masiv + escaladare masivă — ridicat pragul
+    # H2: Brute force masiv + escaladare masivă
     if failed >= 12 and sudo >= 10:
         _fire(result,
               f"H2:brute_force({failed}x)+escaladare({sudo}x)",
               0.90, shortcut=True)
 
-    # H3: Brute force extrem singur — ridicat la 18
+    # H3: Brute force extrem singur
     elif failed >= 18:
         _fire(result,
               f"H3:extreme_brute_force({failed}x)",
               0.85, shortcut=True)
 
-    # H4: Escaladare + exfiltrare — ridicat pragul sudo la 10
-    if sudo >= 10 and uploads >= 3:
+    # H4: Escaladare + exfiltrare
+    # shortcut doar cu sudo >= 12 — sudo=8-11 intră în ML
+    if sudo >= 12 and uploads >= 3:
         _fire(result,
               f"H4:escaladare({sudo}x)+exfiltrare({uploads}x)",
               0.85, shortcut=True)
+    elif sudo >= 8 and uploads >= 3:
+        # sudo 8-11 + uploads → suspect dar ML decide
+        _fire(result,
+              f"H4:escaladare({sudo}x)+exfiltrare({uploads}x)",
+              0.72)
 
-    # H5: Triada completă — ridicat pragurile
+    # H5: Triada completă
     if failed >= 10 and sudo >= 8 and uploads >= 3:
         _fire(result,
               f"H5:triada_failed({failed})+sudo({sudo})+uploads({uploads})",
