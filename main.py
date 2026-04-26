@@ -58,11 +58,11 @@ LOG_CATEGORIES = ["auth", "web", "network", "system", "alert"]
 #   alert HIGH=0.55:   alertele externe au deja filtrat zgomotul
 
 THRESHOLDS = {
-    "auth":    {"HIGH": 0.55, "MEDIUM": 0.35},
-    "network": {"HIGH": 0.75, "MEDIUM": 0.50},
-    "web":     {"HIGH": 0.65, "MEDIUM": 0.40},
-    "system":  {"HIGH": 0.62, "MEDIUM": 0.38},
-    "alert":   {"HIGH": 0.55, "MEDIUM": 0.30},
+    "auth":    {"HIGH": 0.65, "MEDIUM": 0.45},
+    "network": {"HIGH": 0.80, "MEDIUM": 0.55},
+    "web":     {"HIGH": 0.70, "MEDIUM": 0.48},
+    "system":  {"HIGH": 0.70, "MEDIUM": 0.48},
+    "alert":   {"HIGH": 0.65, "MEDIUM": 0.42},
 }
 
 # ── Boost threshold ───────────────────────────────────────────────
