@@ -20,9 +20,18 @@ def apply_rule_engine(sem_feats: dict, payload: dict) -> RuleResult:
         _fire(result, "A5:sudo_shell_escape", 0.95, shortcut=True)
 
     # ── Grupul B — Credențiale ───────────────────────────────────
-    if lsass >= 1:
-        _fire(result, "B1:lsass_access", 1.0, shortcut=True)
 
+    # B1: lsass singur — NU mai e shortcut la 1
+    # lsass=1 poate fi AV scan sau diagnostic legitim
+    # shortcut doar de la lsass >= 2
+    if lsass >= 2:
+        _fire(result, f"B1:lsass_access({lsass}x)", 0.95,
+              shortcut=True)
+    elif lsass == 1:
+        # lsass=1 → suspect dar nu cert → scor moderat fără shortcut
+        _fire(result, "B1:lsass_single_access", 0.65)
+
+    # B2: campanie lsass + brute force
     if lsass >= 3 and failed >= 8:
         _fire(result,
               f"B2:lsass_campaign({lsass}x)+brute_force({failed}x)",
@@ -35,8 +44,15 @@ def apply_rule_engine(sem_feats: dict, payload: dict) -> RuleResult:
     if sem_feats.get("lateral_movement", 0):
         _fire(result, "B3:lateral_movement", 1.0, shortcut=True)
 
-    if failed >= 5:
-        score = min(0.5 + failed * 0.04, 0.95)
+    # B4: brute force — ridicat pragul de la 5 la 8
+    # 5-7 failed auth poate fi utilizator care uită parola
+    # shortcut doar de la 12+
+    if failed >= 12:
+        score = min(0.6 + failed * 0.03, 0.95)
+        _fire(result, f"B4:auth_failures({failed}x/5min)",
+              score, shortcut=True)
+    elif failed >= 8:
+        score = min(0.5 + failed * 0.03, 0.85)
         _fire(result, f"B4:auth_failures({failed}x/5min)", score)
 
     # ── Grupul C — Fișiere ───────────────────────────────────────
@@ -71,8 +87,11 @@ def apply_rule_engine(sem_feats: dict, payload: dict) -> RuleResult:
         _fire(result, "F5:edr_alert", 0.85)
 
     # ── Grupul G — Pattern-uri compuse ───────────────────────────
-    if failed >= 3 and sudo >= 1:
-        _fire(result, "G2:failed_auth_then_sudo", 0.70)
+
+    # G2: ridicat pragul — failed >= 6 și sudo >= 3
+    # failed=3 + sudo=1 e prea comun și normal
+    if failed >= 6 and sudo >= 3:
+        _fire(result, "G2:failed_auth_then_sudo", 0.65)
 
     if sem_feats.get("entity_upload_count_5m", 0) >= 1 and \
        sem_feats.get("writes_sensitive_path", 0):
@@ -84,35 +103,34 @@ def apply_rule_engine(sem_feats: dict, payload: dict) -> RuleResult:
               1.0, shortcut=True)
 
     # ── Grupul H — Context masiv ─────────────────────────────────
-    # Rezolvă cazurile cu IF behavior=0 și template frecvent
-    # dar context cert malițios — independent de template
 
-    # H1: Lsass campanie + brute force
-    if lsass >= 2 and failed >= 8:
+    # H1: lsass >= 2 deja prins de B1
+    # Păstrăm doar pentru combinație cu brute force masiv
+    if lsass >= 2 and failed >= 10:
         _fire(result,
               f"H1:lsass({lsass}x)+brute_force({failed}x)",
               0.95, shortcut=True)
 
-    # H2: Brute force masiv + escaladare masivă
-    if failed >= 10 and sudo >= 8:
+    # H2: Brute force masiv + escaladare masivă — ridicat pragul
+    if failed >= 12 and sudo >= 10:
         _fire(result,
               f"H2:brute_force({failed}x)+escaladare({sudo}x)",
               0.90, shortcut=True)
 
-    # H3: Brute force extrem singur
-    elif failed >= 15:
+    # H3: Brute force extrem singur — ridicat la 18
+    elif failed >= 18:
         _fire(result,
               f"H3:extreme_brute_force({failed}x)",
               0.85, shortcut=True)
 
-    # H4: Escaladare + exfiltrare
-    if sudo >= 8 and uploads >= 3:
+    # H4: Escaladare + exfiltrare — ridicat pragul sudo la 10
+    if sudo >= 10 and uploads >= 3:
         _fire(result,
               f"H4:escaladare({sudo}x)+exfiltrare({uploads}x)",
               0.85, shortcut=True)
 
-    # H5: Triada completă fără lsass
-    if failed >= 8 and sudo >= 6 and uploads >= 3:
+    # H5: Triada completă — ridicat pragurile
+    if failed >= 10 and sudo >= 8 and uploads >= 3:
         _fire(result,
               f"H5:triada_failed({failed})+sudo({sudo})+uploads({uploads})",
               0.88, shortcut=True)

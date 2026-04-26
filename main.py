@@ -58,10 +58,10 @@ LOG_CATEGORIES = ["auth", "web", "network", "system", "alert"]
 #   alert HIGH=0.55:   alertele externe au deja filtrat zgomotul
 
 THRESHOLDS = {
-    "auth":    {"HIGH": 0.65, "MEDIUM": 0.45},
+    "auth":    {"HIGH": 0.68, "MEDIUM": 0.45},
     "network": {"HIGH": 0.80, "MEDIUM": 0.55},
-    "web":     {"HIGH": 0.70, "MEDIUM": 0.48},
-    "system":  {"HIGH": 0.70, "MEDIUM": 0.48},
+    "web":     {"HIGH": 0.72, "MEDIUM": 0.48},
+    "system":  {"HIGH": 0.72, "MEDIUM": 0.48},
     "alert":   {"HIGH": 0.65, "MEDIUM": 0.42},
 }
 
