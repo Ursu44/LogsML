@@ -3,7 +3,7 @@ from collections import defaultdict, deque
 from externalIPCheck import *
 from listeConstante import *
 
-WINDOW_5M = 300
+WINDOW_5M = 90
 entity_failed_auth   = defaultdict(lambda: deque(maxlen=50))
 entity_sudo_events   = defaultdict(lambda: deque(maxlen=50))
 entity_uploads       = defaultdict(lambda: deque(maxlen=50))
