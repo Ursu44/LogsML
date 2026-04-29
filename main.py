@@ -32,7 +32,7 @@ from antrenareLSTM import train_lstm_model, SEQ_LEN
 from scoreLSTM import score_lstm_model
 
 WINDOW_1M = 60
-WINDOW_5M = 300
+WINDOW_5M = 120
 
 BUFFER_SIZE       = 400
 BUFFER_SIZE_BEHAV = 400
@@ -61,11 +61,11 @@ BOOST_THRESHOLD = 0.92
 LSTM_CONFIDENCE_MIN = 0.5
 
 ENTITY_WINDOWS = {
-    "auth":    300,
+    "auth":    120,
     "network": 60,
-    "system":  600,
-    "web":     120,
-    "alert":   300,
+    "system":  180,
+    "web":     60,
+    "alert":   120,
 }
 
 consumer = KafkaConsumer(
