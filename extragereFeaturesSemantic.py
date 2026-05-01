@@ -13,6 +13,7 @@ def extract_semantic_features(payload: dict, entity_id: str, ts: float) -> dict:
     raw_log   = payload.get("log", "").lower()
     features  = payload.get("features", {})
 
+
     sem_ip      = features.get("src_ip", "") or ""
     sem_process = features.get("process", "") or ""
     sem_path    = features.get("path", "") or ""
