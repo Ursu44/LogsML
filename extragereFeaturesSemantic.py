@@ -3,11 +3,11 @@ from collections import defaultdict, deque
 from externalIPCheck import *
 from listeConstante import *
 
-WINDOW_5M = 60
-entity_failed_auth   = defaultdict(lambda: deque(maxlen=15))
-entity_sudo_events   = defaultdict(lambda: deque(maxlen=15))
-entity_uploads       = defaultdict(lambda: deque(maxlen=15))
-entity_lsass_events  = defaultdict(lambda: deque(maxlen=15))
+WINDOW_5M = 20
+entity_failed_auth   = defaultdict(lambda: deque(maxlen=5))
+entity_sudo_events   = defaultdict(lambda: deque(maxlen=5))
+entity_uploads       = defaultdict(lambda: deque(maxlen=5))
+entity_lsass_events  = defaultdict(lambda: deque(maxlen=5))
 entity_process_set   = defaultdict(set)
 def extract_semantic_features(payload: dict, entity_id: str, ts: float) -> dict:
     raw_log   = payload.get("log", "").lower()
