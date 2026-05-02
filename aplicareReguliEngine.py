@@ -11,19 +11,19 @@ def apply_rule_engine(sem_feats: dict, payload: dict) -> RuleResult:
     uploads = sem_feats.get("entity_upload_count_5m", 0)
 
     # ── Grupul A — Execuție malițioasă ───────────────────────────
-    if sem_feats.get("download_exec", 0):
+    if sem_feats.get("has_download_exec", 0):
         _fire(result, "A2:download_exec", 0.90, shortcut=True)
 
-    if sem_feats.get("lolbin_detected", 0):
+    if sem_feats.get("is_lolbin", 0):
         _fire(result, "A3:lolbin", 0.95, shortcut=True)
 
     if sem_feats.get("sudo_shell_escape", 0):
         _fire(result, "A5:sudo_shell_escape", 0.95, shortcut=True)
 
-    # ── Grupul B — Credențiale ───────────────────────────────────
+    if sem_feats.get("has_reverse_shell", 0):
+        _fire(result, "A1:reverse_shell", 0.95, shortcut=True)
 
-    # B1: shortcut doar de la lsass >= 5
-    # lsass 1-4 → scoruri graduale fără shortcut → intră în ML
+    # ── Grupul B — Credențiale ───────────────────────────────────
     if lsass >= 5:
         _fire(result, f"B1:lsass_access({lsass}x)", 0.95,
               shortcut=True)
@@ -36,7 +36,6 @@ def apply_rule_engine(sem_feats: dict, payload: dict) -> RuleResult:
     elif lsass == 1:
         _fire(result, "B1:lsass_single_access", 0.48)
 
-    # B2: campanie lsass — shortcut doar cu failed >= 12
     if lsass >= 4 and failed >= 12:
         _fire(result,
               f"B2:lsass_campaign({lsass}x)+brute_force({failed}x)",
@@ -50,12 +49,9 @@ def apply_rule_engine(sem_feats: dict, payload: dict) -> RuleResult:
               f"B2:lsass_campaign({lsass}x)",
               0.70)
 
-    if sem_feats.get("lateral_movement", 0):
+    if sem_feats.get("is_lateral_movement", 0):
         _fire(result, "B3:lateral_movement", 1.0, shortcut=True)
 
-    # B4: brute force
-    # shortcut doar de la 18+ — extrem
-    # 8-17 → scoruri graduale fără shortcut
     if failed >= 18:
         score = min(0.65 + failed * 0.01, 0.92)
         _fire(result, f"B4:auth_failures({failed}x/5min)",
@@ -68,40 +64,52 @@ def apply_rule_engine(sem_feats: dict, payload: dict) -> RuleResult:
         _fire(result, f"B4:auth_failures({failed}x/5min)", score)
 
     # ── Grupul C — Fișiere ───────────────────────────────────────
-    if sem_feats.get("malicious_file_upload", 0):
+    if sem_feats.get("is_malicious_file_upload", 0):
         _fire(result, "C1:malicious_file_upload", 0.95, shortcut=True)
 
     if sem_feats.get("writes_sensitive_path", 0):
         _fire(result, "C2:writes_sensitive_path", 1.0, shortcut=True)
 
     # ── Grupul D — Web ───────────────────────────────────────────
-    if sem_feats.get("debug_endpoint_access", 0):
+    if sem_feats.get("has_debug_endpoint", 0):
         _fire(result, "D4:debug_endpoint_access", 0.5)
 
-    if sem_feats.get("destructive_http_method", 0):
+    if sem_feats.get("has_destructive_http", 0):
         _fire(result, "D5:destructive_http_method", 0.7)
 
+    if sem_feats.get("has_sqli", 0):
+        _fire(result, "D1:sql_injection", 0.75)
+
+    if sem_feats.get("has_xss", 0):
+        _fire(result, "D2:xss_attempt", 0.65)
+
+    if sem_feats.get("has_path_traversal", 0):
+        _fire(result, "D3:path_traversal", 0.70)
+
     # ── Grupul E — Rețea ─────────────────────────────────────────
-    if sem_feats.get("suspicious_dns", 0):
+    if sem_feats.get("is_suspicious_dns", 0):
         _fire(result, "E1:suspicious_dns_query", 0.7)
 
-    if sem_feats.get("firewall_block_external", 0):
+    if sem_feats.get("is_firewall_block_external", 0):
         _fire(result, "E3:firewall_block_external", 0.65)
 
     # ── Grupul F — Alerte externe ────────────────────────────────
-    if sem_feats.get("ids_alert", 0):
+    if sem_feats.get("is_ids_alert", 0):
         _fire(result, "F2:ids_alert", 0.85)
 
-    if sem_feats.get("dlp_alert", 0):
+    if sem_feats.get("is_dlp_alert", 0):
         _fire(result, "F3:dlp_alert", 0.8)
 
-    if sem_feats.get("edr_alert", 0):
+    if sem_feats.get("is_edr_alert", 0):
         _fire(result, "F5:edr_alert", 0.85)
 
-    # ── Grupul G — Pattern-uri compuse ───────────────────────────
+    if sem_feats.get("is_av_alert", 0):
+        _fire(result, "F1:av_alert", 0.75)
 
-    # G2: failed >= 10 și sudo >= 6 — mai restrictiv
-    # scenariul failed=8+sudo=5 e prea comun
+    if sem_feats.get("is_siem_alert", 0):
+        _fire(result, "F4:siem_alert", 0.80)
+
+    # ── Grupul G — Pattern-uri compuse ───────────────────────────
     if failed >= 10 and sudo >= 6:
         _fire(result, "G2:failed_auth_then_sudo", 0.68)
 
@@ -110,13 +118,11 @@ def apply_rule_engine(sem_feats: dict, payload: dict) -> RuleResult:
         _fire(result, "G3:upload_plus_sensitive_write",
               1.0, shortcut=True)
 
-    if sem_feats.get("lateral_movement", 0) and lsass >= 1:
+    if sem_feats.get("is_lateral_movement", 0) and lsass >= 1:
         _fire(result, "G5:lateral_plus_credential_dump",
               1.0, shortcut=True)
 
     # ── Grupul H — Context masiv ─────────────────────────────────
-
-    # H1: lsass >= 3 + brute force masiv
     if lsass >= 3 and failed >= 14:
         _fire(result,
               f"H1:lsass({lsass}x)+brute_force({failed}x)",
@@ -126,19 +132,15 @@ def apply_rule_engine(sem_feats: dict, payload: dict) -> RuleResult:
               f"H1:lsass({lsass}x)+brute_force({failed}x)",
               0.78)
 
-    # H2: Brute force masiv + escaladare masivă
     if failed >= 15 and sudo >= 12:
         _fire(result,
               f"H2:brute_force({failed}x)+escaladare({sudo}x)",
               0.90, shortcut=True)
-
-    # H3: Brute force extrem
     elif failed >= 20:
         _fire(result,
               f"H3:extreme_brute_force({failed}x)",
               0.85, shortcut=True)
 
-    # H4: Escaladare + exfiltrare
     if sudo >= 14 and uploads >= 4:
         _fire(result,
               f"H4:escaladare({sudo}x)+exfiltrare({uploads}x)",
@@ -148,7 +150,6 @@ def apply_rule_engine(sem_feats: dict, payload: dict) -> RuleResult:
               f"H4:escaladare({sudo}x)+exfiltrare({uploads}x)",
               0.72)
 
-    # H5: Triada completă
     if failed >= 12 and sudo >= 10 and uploads >= 4:
         _fire(result,
               f"H5:triada_failed({failed})+sudo({sudo})+uploads({uploads})",
